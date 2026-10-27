@@ -1,0 +1,84 @@
+# Runs one request from the Metro review bot on a fresh GitHub-hosted Windows
+# or Linux VM: a react/metro commit plus files the review wrote, and one command (Jest
+# files, a Node script, or an allowlisted yarn script). The bot uses this for
+# PRs by authors it doesn't trust to run code on its own machines, so the code
+# under test is treated as hostile: nothing here holds a secret, the token is
+# read-only, and the runner script comes from main, never from the request.
+name: run
+run-name: ${{ inputs.request_id }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      metro_sha:
+        description: react/metro commit to check out
+        required: true
+        type: string
+      request_ref:
+        description: Branch in this repo holding request.json and files/
+        required: true
+        type: string
+      request_id:
+        description: Unique id, used as the run name so the bot can find the run
+        required: true
+        type: string
+      os:
+        description: Runner image
+        required: true
+        type: choice
+        options: [windows-latest, ubuntu-latest]
+
+permissions:
+  contents: read
+
+jobs:
+  run:
+    runs-on: ${{ inputs.os }}
+    timeout-minutes: 30
+    steps:
+      - name: Check inputs
+        shell: bash
+        env:
+          METRO_SHA: ${{ inputs.metro_sha }}
+          REQUEST_REF: ${{ inputs.request_ref }}
+        run: |
+          [[ "$METRO_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo "bad metro_sha"; exit 1; }
+          [[ "$REQUEST_REF" =~ ^req/[A-Za-z0-9._-]+$ ]] || { echo "bad request_ref"; exit 1; }
+
+      - uses: actions/checkout@v7
+        with:
+          path: runner
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.request_ref }}
+          path: request
+          persist-credentials: false
+
+      - uses: actions/checkout@v7
+        with:
+          repository: react/metro
+          ref: ${{ inputs.metro_sha }}
+          path: metro
+          persist-credentials: false
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Install dependencies
+        working-directory: metro
+        run: npx --yes yarn@1.22.22 install --frozen-lockfile --non-interactive
+
+      - name: Run the request
+        run: node runner/run.mjs request/request.json metro request/files result.json
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: result
+          path: result.json
+          if-no-files-found: ignore
+          retention-days: 3
